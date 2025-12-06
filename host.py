@@ -14,16 +14,14 @@ from telegram.ext import (
 )
 
 # ==============================================================================
-# ⚙️ USER CONFIGURATION (PASTE YOUR KEYS HERE)
+# ⚙️ USER CONFIGURATION
 # ==============================================================================
 
 # 1. The Token for THIS bot (The Manager)
-# Get this from @BotFather
-MANAGER_BOT_TOKEN = "PASTE_YOUR_TELEGRAM_BOT_TOKEN_HERE"
+MANAGER_BOT_TOKEN = "8590724179:AAES-qnrXYLz79vCRphTKgseXN4JYzvcL0U"
 
 # 2. Your Gemini API Key
-# Get this from Google AI Studio
-GEMINI_API_KEY = "PASTE_YOUR_GEMINI_API_KEY_HERE"
+GEMINI_API_KEY = "AIzaSyCE1ZG6R3yMF-95UNO0dlEjBFI4GtEOXOc"
 
 # File name for the bot we will generate
 GENERATED_BOT_FILE = "generated_bot.py"
@@ -133,7 +131,10 @@ async def menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif choice == 'host_bot':
         if not os.path.exists(GENERATED_BOT_FILE):
-            await query.edit_message_text("⚠️ No code found! Please 'Create New Bot' first.")
+            await query.edit_message_text(
+                "⚠️ No code found! Please 'Create New Bot' first.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu", callback_data='back_to_menu')]])
+            )
             return ConversationHandler.END
         
         await query.edit_message_text(
@@ -147,10 +148,20 @@ async def menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if hosted_process:
             hosted_process.terminate()
             hosted_process = None
-            await query.edit_message_text("🔴 **Bot Stopped.**")
+            await query.edit_message_text(
+                "🔴 **Bot Stopped.**",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu", callback_data='back_to_menu')]])
+            )
         else:
-            await query.edit_message_text("ℹ️ Nothing is running.")
+            await query.edit_message_text(
+                "ℹ️ Nothing is running.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu", callback_data='back_to_menu')]])
+            )
         return ConversationHandler.END
+    
+    elif choice == 'back_to_menu':
+        # Re-show start menu
+        return await start(update, context)
 
 async def generate_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
@@ -175,7 +186,10 @@ async def generate_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with open(GENERATED_BOT_FILE, "w", encoding="utf-8") as f:
         f.write(final_code)
 
-    await msg.edit_text("✅ **Code Ready!**\nUse the menu to **Host Bot**.")
+    await msg.edit_text(
+        "✅ **Code Ready!**\nUse the menu to **Host Bot**.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu", callback_data='back_to_menu')]])
+    )
     await update.message.reply_document(document=open(GENERATED_BOT_FILE, 'rb'))
     
     return ConversationHandler.END
@@ -227,6 +241,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MAIN RUNNER
 # ==============================================================================
 if __name__ == '__main__':
+    # Validate keys are not placeholders
     if "PASTE_YOUR" in MANAGER_BOT_TOKEN:
         print("❌ ERROR: You forgot to paste your Bot Token in the script!")
         sys.exit()
@@ -234,7 +249,10 @@ if __name__ == '__main__':
     app = ApplicationBuilder().token(MANAGER_BOT_TOKEN).build()
 
     conv = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
+        entry_points=[
+            CommandHandler('start', start),
+            CallbackQueryHandler(menu_button, pattern='^back_to_menu$')
+        ],
         states={
             SELECTING_ACTION: [CallbackQueryHandler(menu_button)],
             WAITING_FOR_PROMPT: [MessageHandler(filters.TEXT & ~filters.COMMAND, generate_code)],
