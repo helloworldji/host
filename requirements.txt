@@ -1,1 +1,7 @@
-
+flask
+python-telegram-bot
+requests
+aiohttp
+numpy
+pandas
+pillow
