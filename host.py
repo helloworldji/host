@@ -13,9 +13,8 @@ from telegram.ext import (
 )
 
 # --- CONFIGURATION ---
-# 1. Get this token from @BotFather. 
-# 2. Add it to Render Environment Variables as: TELEGRAM_HOST_TOKEN
-HOST_BOT_TOKEN = os.environ.get("TELEGRAM_HOST_TOKEN") 
+# YOUR TOKEN IS NOW HARDCODED HERE
+HOST_BOT_TOKEN = "8590724179:AAE2MB6V4bAoA2zGsH5ZSPnCBGp101hwpvE"
 
 # Folder to store user bots
 BOTS_FOLDER = "user_bots"
@@ -43,7 +42,8 @@ def home():
     return f"Telegram Host Bot is alive! Currently hosting {count} bots."
 
 def run_flask():
-    # Render assigns a random port in the PORT env var
+    # Render AUTOMATICALLY provides a PORT environment variable.
+    # We must listen on this port, or Render will kill the app.
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
 
@@ -79,7 +79,6 @@ def install_imports(file_path):
                 continue
             
             # --- SPECIAL MAPPINGS ---
-            # Users import 'telegram', but pip needs 'python-telegram-bot'
             if lib == 'telegram':
                 package_name = 'python-telegram-bot'
             elif lib == 'PIL':
@@ -114,7 +113,6 @@ async def receive_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Stores the token temporarily."""
     token = update.message.text.strip()
     
-    # Basic validation (Telegram tokens usually have a colon)
     if ':' not in token:
         await update.message.reply_text("❌ Invalid token format. Please check and send again.")
         return ASK_TOKEN
@@ -132,11 +130,9 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Please upload a valid `.py` file.")
         return ASK_FILE
 
-    # Create storage folder
     if not os.path.exists(BOTS_FOLDER):
         os.makedirs(BOTS_FOLDER)
 
-    # Save file as bot_{user_id}.py so one user doesn't overwrite another
     filename = f"bot_{user_id}.py"
     file_path = os.path.join(BOTS_FOLDER, filename)
     
@@ -145,7 +141,7 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text("⏳ File received. Installing dependencies... (This might take a moment)")
 
-    # 1. Kill existing bot if user already has one running
+    # Kill existing bot if user already has one running
     if user_id in running_bots:
         old_process = running_bots[user_id]
         old_process.terminate()
@@ -156,19 +152,16 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         del running_bots[user_id]
         await update.message.reply_text("🔄 Restarting your bot instance...")
 
-    # 2. Install Dependencies (Magic Install)
-    # We do this in a thread or simple blocking call (Render has fast internet)
+    # Install Dependencies
     try:
         install_imports(file_path)
     except Exception as e:
         logger.error(f"Dependency install failed: {e}")
 
-    # 3. Launch the new Bot
-    # We inject the TOKEN into the environment variables
+    # Launch the new Bot
     bot_env = os.environ.copy()
     user_token = context.user_data['new_bot_token']
     
-    # We set typical env var names users might use
     bot_env["BOT_TOKEN"] = user_token
     bot_env["TELEGRAM_TOKEN"] = user_token
     bot_env["TOKEN"] = user_token
@@ -208,12 +201,11 @@ if __name__ == '__main__':
     flask_thread.daemon = True
     flask_thread.start()
 
-    # 2. Check for the Host's own token
+    # 2. Start Telegram Bot
     if not HOST_BOT_TOKEN:
-        print("CRITICAL ERROR: 'TELEGRAM_HOST_TOKEN' environment variable is missing.")
+        print("CRITICAL ERROR: Token is missing.")
         sys.exit(1)
 
-    # 3. Setup Telegram Bot
     application = ApplicationBuilder().token(HOST_BOT_TOKEN).build()
 
     conv_handler = ConversationHandler(
