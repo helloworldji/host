@@ -64,7 +64,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Conversation States
-SELECTING_ACTION, WAITING_FOR_TOKEN, WAITING_FOR_PROMPT = range(3)
+SELECTING_ACTION, WAITING_FOR_TOKEN, WAITING_FOR_PROMPT, WAITING_FOR_MANUAL_CODE = range(4)
 
 # Global process holder
 hosted_process = None
@@ -74,7 +74,6 @@ hosted_process = None
 # ==============================================================================
 def call_chimkandi_flash(user_prompt):
     """Calls Chimkandi AI to write the Python code."""
-    # The endpoint remains the same, but we refer to it as Chimkandi internally
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={CHIMKANDI_API_KEY}"
     headers = {'Content-Type': 'application/json'}
     
@@ -125,15 +124,15 @@ def extract_and_clean_code(text):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Main Menu"""
     keyboard = [
-        [InlineKeyboardButton("✨ Start Chimkandi Creator", callback_data='start_creation')],
+        [InlineKeyboardButton("✨ Chimkandi Creator (AI)", callback_data='start_ai')],
+        [InlineKeyboardButton("📂 Manual Deploy (Upload/Paste)", callback_data='start_manual')],
         [InlineKeyboardButton("🛑 Stop Running Bot", callback_data='stop_host')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
         "👋 Welcome to Chimkandi AI Bot Factory\n\n"
-        "I can create and host a bot for you automatically.\n"
-        "Click Start to begin.",
+        "Choose an option:",
         reply_markup=reply_markup
     )
     return SELECTING_ACTION
@@ -143,11 +142,19 @@ async def menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     choice = query.data
 
-    if choice == 'start_creation':
+    if choice == 'start_ai':
+        context.user_data['mode'] = 'ai'
         await query.edit_message_text(
             "🔑 Step 1: Enter Token\n\n"
-            "Please paste the Telegram Bot Token for the NEW bot you want to create.\n"
-            "(Get this from @BotFather)"
+            "Paste the Bot Token for the NEW bot."
+        )
+        return WAITING_FOR_TOKEN
+
+    elif choice == 'start_manual':
+        context.user_data['mode'] = 'manual'
+        await query.edit_message_text(
+            "🔑 Step 1: Enter Token\n\n"
+            "Paste the Bot Token for the NEW bot you are uploading manually."
         )
         return WAITING_FOR_TOKEN
 
@@ -171,24 +178,70 @@ async def menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await start(update, context)
 
 async def receive_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Step 1: Save the token and ask for prompt."""
+    """Step 1: Save the token and route based on mode."""
     token = update.message.text.strip()
     context.user_data['target_bot_token'] = token
+    mode = context.user_data.get('mode')
+
+    if mode == 'ai':
+        await update.message.reply_text(
+            "✅ Token Received.\n\n"
+            "📝 Step 2: Describe your Bot\n"
+            "Tell Chimkandi what this bot should do."
+        )
+        return WAITING_FOR_PROMPT
     
-    await update.message.reply_text(
-        "✅ Token Received.\n\n"
-        "📝 Step 2: Describe your Bot\n"
-        "Tell Chimkandi what this bot should do.\n"
-        "Example: 'A bot that replies with a random joke when I say /joke'"
-    )
-    return WAITING_FOR_PROMPT
+    elif mode == 'manual':
+        await update.message.reply_text(
+            "✅ Token Received.\n\n"
+            "📂 Step 2: Upload Script\n"
+            "Please upload your `.py` file OR paste the Python code here."
+        )
+        return WAITING_FOR_MANUAL_CODE
+
+async def receive_manual_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 2 (Manual): Receive file/text and deploy."""
+    msg = await update.message.reply_text("📥 Processing your script...")
+    
+    code = ""
+    
+    # Check if it's a file or text
+    if update.message.document:
+        file_obj = await update.message.document.get_file()
+        await file_obj.download_to_drive(GENERATED_BOT_FILE)
+        # Read the file to ensure we can clean it/inject token logic
+        with open(GENERATED_BOT_FILE, 'r', encoding='utf-8') as f:
+            code = f.read()
+    elif update.message.text:
+        code = update.message.text
+    else:
+        await msg.edit_text("❌ Please send a valid Python file or text code.")
+        return WAITING_FOR_MANUAL_CODE
+
+    # Clean and Ensure Token Logic is present
+    final_code = extract_and_clean_code(code)
+    
+    # Syntax Check
+    try:
+        ast.parse(final_code)
+    except SyntaxError as e:
+        await msg.edit_text(f"⚠️ Syntax Error in your code:\n{e}")
+        return ConversationHandler.END
+
+    # Save final version
+    with open(GENERATED_BOT_FILE, "w", encoding="utf-8") as f:
+        f.write(final_code)
+    
+    await msg.edit_text("✅ Script Verified. Deploying...")
+    
+    # Trigger Deployment
+    return await deploy_process(update, context, msg)
 
 async def generate_and_deploy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Step 2: Generate code and auto-deploy."""
+    """Step 2 (AI): Generate code and deploy."""
     user_prompt = update.message.text
     msg = await update.message.reply_text("🤖 Chimkandi is Coding...")
 
-    # OPTIMIZATION: Run blocking API call in a separate thread so bot doesn't freeze
     loop = asyncio.get_running_loop()
     raw_code = await loop.run_in_executor(None, call_chimkandi_flash, user_prompt)
     
@@ -201,29 +254,33 @@ async def generate_and_deploy(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         ast.parse(final_code)
     except SyntaxError as e:
-        await msg.edit_text(f"⚠️ Code Error generated by Chimkandi:\n{e}")
+        await msg.edit_text(f"⚠️ Chimkandi Error:\n{e}")
         return ConversationHandler.END
 
     with open(GENERATED_BOT_FILE, "w", encoding="utf-8") as f:
         f.write(final_code)
 
-    await msg.edit_text("✅ Code Written. Now Implementing...")
+    await msg.edit_text("✅ Code Written. Implementing...")
+    
+    # Trigger Deployment
+    return await deploy_process(update, context, msg)
 
-    # Auto-Deploy
+async def deploy_process(update, context, status_message):
+    """Shared Deployment Logic."""
     global hosted_process
     if hosted_process:
         hosted_process.terminate()
 
     target_token = context.user_data.get('target_bot_token')
     if not target_token:
-        await msg.edit_text("❌ Error: Token lost. Please restart.")
+        await status_message.edit_text("❌ Error: Token lost. Restart.")
         return ConversationHandler.END
 
-    status = await update.message.reply_text("🔄 Initializing Server...")
+    await status_message.edit_text("🔄 Initializing Server...")
     time.sleep(0.5)
-    await status.edit_text("📦 Installing Dependencies...")
+    await status_message.edit_text("📦 Checking Dependencies...")
     time.sleep(0.5)
-    await status.edit_text("🚀 Launching Chimkandi Bot...")
+    await status_message.edit_text("🚀 Launching Bot...")
 
     env = os.environ.copy()
     env["BOT_TOKEN"] = target_token
@@ -236,17 +293,17 @@ async def generate_and_deploy(update: Update, context: ContextTypes.DEFAULT_TYPE
             stderr=subprocess.PIPE
         )
         
-        await status.edit_text(
-            "🟢 Chimkandi has deployed your bot!\n"
-            "It is now live.\n\n"
-            "Type /start to stop it or create a new one.",
+        await status_message.edit_text(
+            "🟢 Bot Deployed Successfully!\n\n"
+            "Your bot is LIVE 24/7.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu", callback_data='back_to_menu')]])
         )
         
+        # Send the file back to user
         await update.message.reply_document(document=open(GENERATED_BOT_FILE, 'rb'))
 
     except Exception as e:
-        await status.edit_text(f"❌ Implementation Error: {e}")
+        await status_message.edit_text(f"❌ Implementation Error: {e}")
 
     return ConversationHandler.END
 
@@ -262,8 +319,7 @@ if __name__ == '__main__':
         print("❌ ERROR: You forgot to paste your Bot Token in the script!")
         sys.exit()
     
-    # 1. Start Keep-Alive Server in Background Thread
-    # This keeps the bot accessible for UptimeRobot at https://host-lgnm.onrender.com
+    # 1. Start Keep-Alive Server
     server_thread = threading.Thread(target=start_keep_alive, daemon=True)
     server_thread.start()
 
@@ -279,6 +335,7 @@ if __name__ == '__main__':
             SELECTING_ACTION: [CallbackQueryHandler(menu_button)],
             WAITING_FOR_TOKEN: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_token)],
             WAITING_FOR_PROMPT: [MessageHandler(filters.TEXT & ~filters.COMMAND, generate_and_deploy)],
+            WAITING_FOR_MANUAL_CODE: [MessageHandler(filters.TEXT | filters.Document.ALL, receive_manual_code)],
         },
         fallbacks=[CommandHandler('cancel', cancel)]
     )
