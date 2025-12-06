@@ -32,20 +32,17 @@ GENERATED_BOT_FILE = "generated_bot.py"
 # ==============================================================================
 # 🌐 RENDER KEEP-ALIVE SERVER
 # ==============================================================================
-# This satisfies Render's port requirement and allows Uptime Bots to ping your URL:
-# https://host-lgnm.onrender.com
-
 class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
         self.wfile.write(b"Chimkandi Manager is Alive and Running! 24/7")
+    def log_message(self, format, *args):
+        return
 
 def start_keep_alive():
-    # Render sets the PORT environment variable. Default to 8080 if local.
     PORT = int(os.environ.get("PORT", 8080))
-    # Prevent address in use errors
     socketserver.TCPServer.allow_reuse_address = True
     try:
         with socketserver.TCPServer(("", PORT), HealthCheckHandler) as httpd:
@@ -73,8 +70,8 @@ hosted_process = None
 # 🧠 CHIMKANDI AI & CODE LOGIC
 # ==============================================================================
 def call_chimkandi_flash(user_prompt):
-    """Calls Chimkandi AI to write the Python code."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={CHIMKANDI_API_KEY}"
+    """Calls Chimkandi AI (Gemini 1.5 Flash) to write the Python code."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={CHIMKANDI_API_KEY}"
     headers = {'Content-Type': 'application/json'}
     
     system_instruction = (
@@ -99,7 +96,6 @@ def call_chimkandi_flash(user_prompt):
         return None
 
 def extract_and_clean_code(text):
-    """Cleans the AI code and auto-fixes token errors."""
     match = re.search(r"```python(.*?)```", text, re.DOTALL)
     if not match:
         match = re.search(r"```(.*?)```", text, re.DOTALL)
@@ -114,12 +110,29 @@ def extract_and_clean_code(text):
         ".token(os.getenv('BOT_TOKEN'))", 
         code
     )
-    
     return code
 
 # ==============================================================================
-# 🎮 BOT HANDLERS
+# 🎮 BOT HANDLERS & NAVIGATION
 # ==============================================================================
+
+async def back_to_menu_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Universal Back Button Logic"""
+    query = update.callback_query
+    await query.answer()
+    
+    keyboard = [
+        [InlineKeyboardButton("✨ Chimkandi Creator (AI)", callback_data='start_ai')],
+        [InlineKeyboardButton("📂 Manual Deploy (Upload/Paste)", callback_data='start_manual')],
+        [InlineKeyboardButton("🛑 Stop Running Bot", callback_data='stop_host')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        "👋 **Main Menu**\n\nChoose an option:",
+        reply_markup=reply_markup
+    )
+    return SELECTING_ACTION
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Main Menu"""
@@ -142,19 +155,24 @@ async def menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     choice = query.data
 
+    back_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data='back_to_menu')]])
+
     if choice == 'start_ai':
         context.user_data['mode'] = 'ai'
         await query.edit_message_text(
-            "🔑 Step 1: Enter Token\n\n"
-            "Paste the Bot Token for the NEW bot."
+            "🔑 **Step 1: Enter Token**\n\n"
+            "Paste the Bot Token for the NEW bot you want to create.\n"
+            "_(Get this from @BotFather)_",
+            reply_markup=back_btn
         )
         return WAITING_FOR_TOKEN
 
     elif choice == 'start_manual':
         context.user_data['mode'] = 'manual'
         await query.edit_message_text(
-            "🔑 Step 1: Enter Token\n\n"
-            "Paste the Bot Token for the NEW bot you are uploading manually."
+            "🔑 **Step 1: Enter Token**\n\n"
+            "Paste the Bot Token for the NEW bot you are uploading manually.",
+            reply_markup=back_btn
         )
         return WAITING_FOR_TOKEN
 
@@ -164,12 +182,12 @@ async def menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             hosted_process.terminate()
             hosted_process = None
             await query.edit_message_text(
-                "🔴 Bot Stopped.",
+                "🔴 **Bot Stopped.**\nThe process has been terminated.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu", callback_data='back_to_menu')]])
             )
         else:
             await query.edit_message_text(
-                "ℹ️ No bot is currently running.",
+                "ℹ️ **No Activity.**\nNo bot is currently running.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu", callback_data='back_to_menu')]])
             )
         return ConversationHandler.END
@@ -180,93 +198,111 @@ async def menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def receive_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Step 1: Save the token and route based on mode."""
     token = update.message.text.strip()
+    back_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data='back_to_menu')]])
+    
+    # 1. Regex Check
+    if not re.match(r'^\d+:[A-Za-z0-9_-]+$', token):
+        await update.message.reply_text(
+            "❌ **Invalid Format.**\nThat looks like text, not a token.\n\nTokens look like: `12345:AbCdEf...`\nPlease try again.",
+            reply_markup=back_btn
+        )
+        return WAITING_FOR_TOKEN
+
+    # 2. API Authenticity Check
+    msg = await update.message.reply_text("🔍 Verifying Token with Telegram...")
+    try:
+        r = requests.get(f"https://api.telegram.org/bot{token}/getMe", timeout=5)
+        data = r.json()
+        
+        if not data.get("ok"):
+            await msg.edit_text(
+                "❌ **Fake or Revoked Token.**\nTelegram rejected this token.\nPlease check @BotFather.",
+                reply_markup=back_btn
+            )
+            return WAITING_FOR_TOKEN
+        
+        bot_username = data['result']['username']
+        await msg.edit_text(f"✅ Token Verified!\nTarget: @{bot_username}")
+        time.sleep(1) 
+
+    except Exception as e:
+        await msg.edit_text(f"⚠️ Network Warning: Could not verify token, but proceeding...\n(Error: {e})")
+
     context.user_data['target_bot_token'] = token
     mode = context.user_data.get('mode')
 
     if mode == 'ai':
         await update.message.reply_text(
-            "✅ Token Received.\n\n"
-            "📝 Step 2: Describe your Bot\n"
-            "Tell Chimkandi what this bot should do."
+            "📝 **Step 2: Describe your Bot**\n"
+            "Tell Chimkandi what this bot should do.\n"
+            "Example: 'A bot that sends random anime quotes.'",
+            reply_markup=back_btn
         )
         return WAITING_FOR_PROMPT
     
     elif mode == 'manual':
         await update.message.reply_text(
-            "✅ Token Received.\n\n"
-            "📂 Step 2: Upload Script\n"
-            "Please upload your `.py` file OR paste the Python code here."
+            "📂 **Step 2: Upload Script**\n"
+            "Please upload your `.py` file OR paste the Python code here.",
+            reply_markup=back_btn
         )
         return WAITING_FOR_MANUAL_CODE
 
 async def receive_manual_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Step 2 (Manual): Receive file/text and deploy."""
     msg = await update.message.reply_text("📥 Processing your script...")
-    
+    back_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data='back_to_menu')]])
+
     code = ""
-    
-    # Check if it's a file or text
     if update.message.document:
         file_obj = await update.message.document.get_file()
         await file_obj.download_to_drive(GENERATED_BOT_FILE)
-        # Read the file to ensure we can clean it/inject token logic
         with open(GENERATED_BOT_FILE, 'r', encoding='utf-8') as f:
             code = f.read()
     elif update.message.text:
         code = update.message.text
     else:
-        await msg.edit_text("❌ Please send a valid Python file or text code.")
+        await msg.edit_text("❌ Please send a valid Python file or text code.", reply_markup=back_btn)
         return WAITING_FOR_MANUAL_CODE
 
-    # Clean and Ensure Token Logic is present
     final_code = extract_and_clean_code(code)
-    
-    # Syntax Check
     try:
         ast.parse(final_code)
     except SyntaxError as e:
-        await msg.edit_text(f"⚠️ Syntax Error in your code:\n{e}")
-        return ConversationHandler.END
+        await msg.edit_text(f"⚠️ **Syntax Error:**\n{e}", reply_markup=back_btn)
+        return WAITING_FOR_MANUAL_CODE
 
-    # Save final version
     with open(GENERATED_BOT_FILE, "w", encoding="utf-8") as f:
         f.write(final_code)
     
     await msg.edit_text("✅ Script Verified. Deploying...")
-    
-    # Trigger Deployment
     return await deploy_process(update, context, msg)
 
 async def generate_and_deploy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Step 2 (AI): Generate code and deploy."""
     user_prompt = update.message.text
     msg = await update.message.reply_text("🤖 Chimkandi is Coding...")
+    back_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data='back_to_menu')]])
 
     loop = asyncio.get_running_loop()
     raw_code = await loop.run_in_executor(None, call_chimkandi_flash, user_prompt)
     
     if not raw_code:
-        await msg.edit_text("❌ API Error. Check your API Key.")
+        await msg.edit_text("❌ API Error. Check your API Key.", reply_markup=back_btn)
         return ConversationHandler.END
 
     final_code = extract_and_clean_code(raw_code)
-    
     try:
         ast.parse(final_code)
     except SyntaxError as e:
-        await msg.edit_text(f"⚠️ Chimkandi Error:\n{e}")
+        await msg.edit_text(f"⚠️ Chimkandi Error:\n{e}", reply_markup=back_btn)
         return ConversationHandler.END
 
     with open(GENERATED_BOT_FILE, "w", encoding="utf-8") as f:
         f.write(final_code)
 
     await msg.edit_text("✅ Code Written. Implementing...")
-    
-    # Trigger Deployment
     return await deploy_process(update, context, msg)
 
 async def deploy_process(update, context, status_message):
-    """Shared Deployment Logic."""
     global hosted_process
     if hosted_process:
         hosted_process.terminate()
@@ -277,8 +313,6 @@ async def deploy_process(update, context, status_message):
         return ConversationHandler.END
 
     await status_message.edit_text("🔄 Initializing Server...")
-    time.sleep(0.5)
-    await status_message.edit_text("📦 Checking Dependencies...")
     time.sleep(0.5)
     await status_message.edit_text("🚀 Launching Bot...")
 
@@ -293,14 +327,28 @@ async def deploy_process(update, context, status_message):
             stderr=subprocess.PIPE
         )
         
-        await status_message.edit_text(
-            "🟢 Bot Deployed Successfully!\n\n"
-            "Your bot is LIVE 24/7.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu", callback_data='back_to_menu')]])
-        )
+        # --- SURETY CHECK ---
+        time.sleep(2)
+        poll = hosted_process.poll()
         
-        # Send the file back to user
-        await update.message.reply_document(document=open(GENERATED_BOT_FILE, 'rb'))
+        if poll is not None:
+            # It crashed
+            _, stderr = hosted_process.communicate()
+            error_msg = stderr.decode() if stderr else "Unknown Error (Exit Code: {})".format(poll)
+            await status_message.edit_text(f"❌ **Bot Crashed on Launch!**\n\nError Log:\n`{error_msg[-600:]}`")
+        else:
+            # It's still running after 2 seconds -> Success
+            pid = hosted_process.pid
+            await status_message.edit_text(
+                f"🟢 **Bot Deployed Successfully!**\n\n"
+                f"✅ PID: `{pid}`\n"
+                f"✅ Status: Running 24/7\n"
+                f"✅ Token Verified\n\n"
+                "You can now use your bot on Telegram.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu", callback_data='back_to_menu')]])
+            )
+            # Send file for backup
+            await update.message.reply_document(document=open(GENERATED_BOT_FILE, 'rb'))
 
     except Exception as e:
         await status_message.edit_text(f"❌ Implementation Error: {e}")
@@ -308,7 +356,7 @@ async def deploy_process(update, context, status_message):
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Action Cancelled.")
+    await update.message.reply_text("❌ Action Cancelled.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu", callback_data='back_to_menu')]]))
     return ConversationHandler.END
 
 # ==============================================================================
@@ -319,23 +367,36 @@ if __name__ == '__main__':
         print("❌ ERROR: You forgot to paste your Bot Token in the script!")
         sys.exit()
     
-    # 1. Start Keep-Alive Server
     server_thread = threading.Thread(target=start_keep_alive, daemon=True)
     server_thread.start()
 
-    # 2. Start Bot
     app = ApplicationBuilder().token(MANAGER_BOT_TOKEN).build()
+
+    # Universal Back Handler
+    back_handler = CallbackQueryHandler(back_to_menu_action, pattern='^back_to_menu$')
 
     conv = ConversationHandler(
         entry_points=[
             CommandHandler('start', start),
-            CallbackQueryHandler(menu_button, pattern='^back_to_menu$')
+            back_handler
         ],
         states={
-            SELECTING_ACTION: [CallbackQueryHandler(menu_button)],
-            WAITING_FOR_TOKEN: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_token)],
-            WAITING_FOR_PROMPT: [MessageHandler(filters.TEXT & ~filters.COMMAND, generate_and_deploy)],
-            WAITING_FOR_MANUAL_CODE: [MessageHandler(filters.TEXT | filters.Document.ALL, receive_manual_code)],
+            SELECTING_ACTION: [
+                CallbackQueryHandler(menu_button),
+                back_handler
+            ],
+            WAITING_FOR_TOKEN: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_token),
+                back_handler
+            ],
+            WAITING_FOR_PROMPT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, generate_and_deploy),
+                back_handler
+            ],
+            WAITING_FOR_MANUAL_CODE: [
+                MessageHandler(filters.TEXT | filters.Document.ALL, receive_manual_code),
+                back_handler
+            ],
         },
         fallbacks=[CommandHandler('cancel', cancel)]
     )
